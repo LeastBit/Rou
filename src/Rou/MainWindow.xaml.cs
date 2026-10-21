@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     readonly DispatcherTimer _toastTimer;
     readonly DispatcherTimer _clockTimer;
     readonly DispatcherTimer _posTimer;
+    readonly DispatcherTimer _heightTimer;
 
     HwndSource? _source;
     IntPtr _hwnd;
@@ -75,6 +76,9 @@ public partial class MainWindow : Window
         _posTimer.Tick += (_, _) => { _posTimer.Stop(); SavePosition(); };
 
         // 空闲时定期归还未用内存页，降低任务管理器中的工作集
+        _heightTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(130) };
+        _heightTimer.Tick += (_, _) => { _heightTimer.Stop(); UpdateHeight(false); };
+
         _trimTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(45) };
         _trimTimer.Tick += (_, _) => { if (!IsActive) TrimMemory(); };
 
@@ -630,13 +634,19 @@ public partial class MainWindow : Window
     // ================= 高度自适应 =================
 
     void ScheduleHeight()
-        => Dispatcher.BeginInvoke(new Action(() => UpdateHeight(true)), DispatcherPriority.Loaded);
+    {
+        Dispatcher.BeginInvoke(new Action(() => UpdateHeight(true)), DispatcherPriority.Loaded);
+        // 批量增删时首次布局可能还没完成，稍后再校准一次
+        _heightTimer.Stop();
+        _heightTimer.Start();
+    }
 
     // 固定部分高度 = 外框留白 + 头部 + 输入条 + 底部进度（含各自 Margin）
     double ChromeHeight()
     {
         static double Outer(FrameworkElement e) => e.ActualHeight + e.Margin.Top + e.Margin.Bottom;
-        double root = Content is FrameworkElement fe ? fe.Margin.Top + fe.Margin.Bottom : 40;
+        // 卡片外边距在 CardHost 上（20 + 20），窗口根节点无外边距
+        double root = CardHost.Margin.Top + CardHost.Margin.Bottom;
         return root + 2 + Outer(Header) + Outer(AddBar) + Outer(Footer);
     }
 
@@ -648,19 +658,38 @@ public partial class MainWindow : Window
             : TaskList.ActualHeight + ListScroll.Padding.Top + ListScroll.Padding.Bottom;
         double target = Math.Clamp(ChromeHeight() + content + 3, 214, ExpandedHeight);
         if (Math.Abs(target - Height) < 1.5) return;
-        if (animate) AnimateHeight(target);
-        else Height = target;
+        // 直接落值：动画在连续增删时容易与基值打架，这里优先保证布局正确
+        BeginAnimation(HeightProperty, null);
+        Height = target;
     }
+
+    double _heightTarget;
 
     void AnimateHeight(double target)
     {
+        // 动画期间 Height 是动画值，直接写基值会被 Stop 行为回滚，
+        // 因此统一用 HoldEnd + 完成回调落基值，避免多次调用互相覆盖。
+        _heightTarget = target;
         double from = Height;
-        Height = target;
-        BeginAnimation(HeightProperty, new DoubleAnimation(from, target, TimeSpan.FromMilliseconds(190))
+        if (Math.Abs(from - target) < 0.5)
+        {
+            BeginAnimation(HeightProperty, null);
+            Height = target;
+            return;
+        }
+
+        var anim = new DoubleAnimation(from, target, TimeSpan.FromMilliseconds(190))
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
-            FillBehavior = FillBehavior.Stop
-        });
+            FillBehavior = FillBehavior.HoldEnd
+        };
+        anim.Completed += (_, _) =>
+        {
+            if (Math.Abs(_heightTarget - target) > 0.5) return;   // 已有更新的目标
+            BeginAnimation(HeightProperty, null);
+            Height = target;
+        };
+        BeginAnimation(HeightProperty, anim);
     }
 
     // ================= 折叠 / 位置 =================
