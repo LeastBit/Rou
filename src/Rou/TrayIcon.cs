@@ -1,3 +1,5 @@
+using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Rou.Interop;
 using Rou.Services;
@@ -9,7 +11,7 @@ internal sealed class TrayIcon : IDisposable
 {
     public const uint CallbackMessage = 0x8000 + 1;
     // 换过图标后递增此 ID，可让资源管理器丢弃旧的托盘缓存
-    const uint IconId = 2;
+    const uint IconId = 3;
     const int WM_LBUTTONUP = 0x0202;
     const int WM_RBUTTONUP = 0x0205;
     const int WM_LBUTTONDBLCLK = 0x0203;
@@ -50,15 +52,31 @@ internal sealed class TrayIcon : IDisposable
 
     static IntPtr LoadAppIcon()
     {
+        // 优先用专用的高对比度托盘图标（内嵌资源），不依赖 exe 图标缓存
         try
         {
-            var path = Environment.ProcessPath;
-            if (!string.IsNullOrEmpty(path))
+            var path = MaterializeTrayIcon();
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
             {
-                // 取 32px 大图标，高 DPI 下由系统缩小，比 16px 放大更清晰
+                var hIcon = Native.LoadImage(IntPtr.Zero, path, 1 /*IMAGE_ICON*/, 32, 32, 0x10 /*LR_LOADFROMFILE*/);
+                if (hIcon != IntPtr.Zero) return hIcon;
+            }
+            else
+            {
+                Store.Log("tray icon file missing: " + path);
+            }
+        }
+        catch (Exception ex) { Store.Log("tray icon resource: " + ex.Message); }
+
+        // 兜底：从 exe 提取
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exe))
+            {
                 var large = new IntPtr[1];
                 var small = new IntPtr[1];
-                if (Native.ExtractIconEx(path, 0, large, small, 1) > 0)
+                if (Native.ExtractIconEx(exe, 0, large, small, 1) > 0)
                 {
                     if (large[0] != IntPtr.Zero) return large[0];
                     if (small[0] != IntPtr.Zero) return small[0];
@@ -67,6 +85,18 @@ internal sealed class TrayIcon : IDisposable
         }
         catch { }
         return Native.LoadIcon(IntPtr.Zero, new IntPtr(32512)); // IDI_APPLICATION
+    }
+
+    /// <summary>把内嵌的 rou-tray.ico 释放到数据目录，供 LoadImage 使用。</summary>
+    static string MaterializeTrayIcon()
+    {
+        var target = Path.Combine(Store.Root, "tray.ico");
+        Directory.CreateDirectory(Store.Root);
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Rou.tray.ico");
+        if (stream == null) return target;
+        using var fs = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.Read);
+        stream.CopyTo(fs);
+        return target;
     }
 
     public void Handle(IntPtr lParam)

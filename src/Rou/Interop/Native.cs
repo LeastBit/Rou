@@ -73,6 +73,12 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadImage(IntPtr hinst, string name, uint type, int cx, int cy, uint load);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int index);
+
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetCurrentProcess();
 
